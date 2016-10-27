@@ -1,4 +1,4 @@
-﻿// Open Productivity - Smartapp version 2.22
+﻿// Open Productivity - Smartapp version 2.31
 (function ($) {
     "use strict";
 
@@ -16,12 +16,11 @@
         if (this._smartapp_inited) {
             throw "Unintended duplicate call of app plugin. Check that you are not declaring and using a function with the same name as the view app!";
         }
-
-        var $me = this;
-        var $currentView = null;
         this._smartapp_inited = true;
 
-        if (!this.AppVersion) this.AppVersion = "unknown";
+        var $app = this;
+        var $currentView = null;
+
         this.ServiceUrl = serviceUrl;
         // Define the jquery class
         this.loaders = 0;
@@ -45,8 +44,8 @@
         // Internal shared create method
         function createComponent(name, renderFunction, initFunction) {
             if (!renderFunction) {
-                renderFunction = $me.fetch(name + ".html");
-                if (!initFunction) initFunction = $me.runPlugin(name.replace(new RegExp("/", "g"), ""));
+                renderFunction = $app.fetch(name + ".html");
+                if (!initFunction) initFunction = $app.runPlugin(name.replace(new RegExp("/", "g"), ""));
             }
             else if (renderFunction instanceof jQuery) {
                 var html = $("<div/>").append(renderFunction).html();
@@ -67,20 +66,20 @@
 
         // Public create methods (view, dialog, control)
         this.createView = function (urlRoute, renderFunction, initFunction) {
-            if (!$me.DefaultViewRoute) $me.DefaultViewRoute = urlRoute;
+            if (!$app.DefaultViewRoute) $app.DefaultViewRoute = urlRoute;
 
             var component = createComponent(urlRoute, renderFunction, initFunction);
-            $me.Views[urlRoute] = component;
+            $app.Views[urlRoute] = component;
         };
 
         this.createDialog = function (name, renderFunction, initFunction) {
             var component = createComponent(name, renderFunction, initFunction);
-            $me.Dialogs[name] = component;
+            $app.Dialogs[name] = component;
         };
 
         this.createControl = function (name, renderFunction, initFunction) {
             var component = createComponent(name, renderFunction, initFunction);
-            $me.Controls[name] = component;
+            $app.Controls[name] = component;
         };
 
         // Add default show / hide handling of views
@@ -97,42 +96,45 @@
         this.run = function () {
             // Add loading layer
             var $loader = $("<div class=\"loading hide\"><span></span></div>");
-            $me.append($loader);
+            $app.append($loader);
 
-            if ($me.RetryDialogName) {
-                var retry = $me.Dialogs[$me.RetryDialogName];
+            if ($app.RetryDialogName) {
+                var retry = $app.Dialogs[$app.RetryDialogName];
                 retry.renderFunc(); // Force cache of retry dialog
             }
 
-            $me.trigger("appinit", [$me]);
+            $app.trigger("appinit", [$app]);
 
-            $me.trigger("hashchange");
+            $app.trigger("hashchange");
         };
 
-        this.addFailedCall = function (retry, cancel, statusCode) {
-            if ($me.FailedRetryCalls == null) {
-                $me.FailedRetryCalls = [];
-                $me.FailedCancelCalls = [];
-                $me.openDialog($me.RetryDialogName, {
+        this.addFailedCall = function (retry, cancel, xhr) {
+            if ($app.FailedRetryCalls == null) {
+                $app.FailedRetryCalls = [];
+                $app.FailedCancelCalls = [];
+                $app.openDialog($app.RetryDialogName, {
                     show: true,
                     keyboard: false,
                     backdrop: "static"
                 }).done(function ($dialog) {
-                    $me.RetryDialog = $dialog;
+                    $app.RetryDialog = $dialog;
+
+                    if ($app.RetryDialog.SetErrorText)
+                        $app.RetryDialog.SetErrorText(xhr);
                 });
             }
-            if (retry != null) $me.FailedRetryCalls.push(retry);
-            if (cancel != null) $me.FailedCancelCalls.push(cancel);
+            else if ($app.RetryDialog && $app.RetryDialog.SetErrorText)
+                $app.RetryDialog.SetErrorText(xhr);
 
-            if (statusCode == 500 || statusCode == 503) {
-                if ($me.RetryDialog && $me.RetryDialog.SetErrorText)
-                    $me.RetryDialog.SetErrorText();
-            }
+            if (retry != null) $app.FailedRetryCalls.push(retry);
+            if (cancel != null) $app.FailedCancelCalls.push(cancel);
         };
+
         this.APIGet = function (controller, method, data, opts) {
             var info = "API GET " + controller + "/" + method;
             var startTimer = new Date();
             if (opts == null) opts = {};
+            if (data == null) data = {};
 
             if (opts.cache) opts.cache = true;
             else opts.cache = false;
@@ -140,25 +142,21 @@
             var ajaxcall = null;
 
             var dfd = $.Deferred();
-
-            if ($me.AppVersion)
-                data.SmartAppVersion = $me.AppVersion; // Append version info
-
             controller = controller.replace(new RegExp("/", "g"), "");
 
             (function nestedCall() {
-                if (!opts.background) $me.showLoading(info);
-                else $me.log(info);
+                if (!opts.background) $app.showLoading(info);
+                else $app.log(info);
 
                 ajaxcall = $.ajax({
-                    url: $me.ServiceUrl + "/" + controller + "/" + method,
+                    url: $app.ServiceUrl + "/" + controller + "/" + method,
                     dataType: opts.cache ? "json" : (options.disableJsonp ? "json" : "jsonp"),
                     async: true,
                     type: "GET",
                     data: data,
                     cache: opts.cache,
-                    beforeSend: function (request) {
-                        $me.trigger("beforeapiget", [request]);
+                    beforeSend: function (request, settings) {
+                        $app.trigger("beforeapiget", [request, settings]);
                     }
                 });
 
@@ -166,24 +164,24 @@
                     // SUCCESS
                     ajaxcall = null; // Prevent any abort call
                     var diffMs = (new Date()).getTime() - startTimer.getTime();
-                    if (!opts.background) $me.hideLoading(info + " (" + diffMs + "ms)");
-                    else $me.log("SUCCESS: " + info);
+                    if (!opts.background) $app.hideLoading(info + " (" + diffMs + "ms)");
+                    else $app.log("SUCCESS: " + info);
                     dfd.resolveWith(this, [resultObject, textStatus, jqXhr]);
                 }, function (xhr, ajaxOptions, thrownError) {
                     // FAIL
                     ajaxcall = null; // Prevent any abort call
                     var diffMs = (new Date()).getTime() - startTimer.getTime();
-                    if (!opts.background) $me.hideLoading(info + " FAILED (" + diffMs + "ms)");
-                    $me.log("FAILED: " + info);
+                    if (!opts.background) $app.hideLoading(info + " FAILED (" + diffMs + "ms)");
+                    $app.log("FAILED: " + info);
 
-                    if (opts.noretry || $me.RetryDialogName == null) {
-                        $me.error(thrownError);
+                    if (opts.noretry || $app.RetryDialogName == null) {
+                        $app.error(thrownError);
                         dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
                     } else {
-                        $me.addFailedCall(nestedCall, function () {
-                            $me.log("CANCEL RETRY: " + info);
+                        $app.addFailedCall(nestedCall, function () {
+                            $app.log("CANCEL RETRY: " + info);
                             dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
-                        }, xhr.status);
+                        }, xhr);
                     }
                 });
             })();
@@ -200,6 +198,7 @@
             var info = "API POST " + controller + "/" + method;
             var startTimer = new Date();
             if (opts == null) opts = {};
+            if (data == null) data = {};
 
             if (opts.cache) opts.cache = true;
             else opts.cache = false;
@@ -207,24 +206,20 @@
             var ajaxcall = null;
 
             var dfd = $.Deferred();
-
-            if ($me.AppVersion)
-                data.SmartAppVersion = $me.AppVersion; // Append version info
-
             controller = controller.replace(new RegExp("/", "g"), "");
 
             (function nestedCall() {
-                if (!opts.background) $me.showLoading(info);
+                if (!opts.background) $app.showLoading(info);
                 ajaxcall = $.ajax({
                     type: "POST",
-                    url: $me.ServiceUrl + "/" + controller + "/" + method,
+                    url: $app.ServiceUrl + "/" + controller + "/" + method,
                     data: JSON.stringify(data),
                     dataType: "json", // always json
                     contentType: "application/json; charset=utf-8",
                     async: true,
                     cache: opts.cache,
-                    beforeSend: function (request) {
-                        $me.trigger("beforeapipost", [request]);
+                    beforeSend: function (request, settings) {
+                        $app.trigger("beforeapipost", [request, settings]);
                     }
                 });
 
@@ -232,21 +227,21 @@
                     // SUCCESS
                     ajaxcall = null; // Prevent any abort call
                     var diffMs = (new Date()).getTime() - startTimer.getTime();
-                    if (!opts.background) $me.hideLoading(info + " (" + diffMs + "ms)");
+                    if (!opts.background) $app.hideLoading(info + " (" + diffMs + "ms)");
                     dfd.resolveWith(this, [resultObject, textStatus, jqXhr]);
                 }, function (xhr, ajaxOptions, thrownError) {
                     // FAIL
                     ajaxcall = null; // Prevent any abort call
                     var diffMs = (new Date()).getTime() - startTimer.getTime();
-                    if (!opts.background) $me.hideLoading(info + " FAILED (" + diffMs + "ms) - " + thrownError);
-                    if (opts.noretry || $me.RetryDialogName == null) {
-                        $me.error(thrownError);
+                    if (!opts.background) $app.hideLoading(info + " FAILED (" + diffMs + "ms) - " + thrownError);
+                    if (opts.noretry || $app.RetryDialogName == null) {
+                        $app.error(thrownError);
                         dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
                     } else {
-                        $me.addFailedCall(nestedCall, function () {
-                            $me.log("CANCEL RETRY: " + info);
+                        $app.addFailedCall(nestedCall, function () {
+                            $app.log("CANCEL RETRY: " + info);
                             dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
-                        }, xhr.status);
+                        }, xhr);
                     }
                 });
             })();
@@ -268,7 +263,7 @@
                 query += encodeURIComponent(key) + "=" + encodeURIComponent(value) + "&";
             });
 
-            return window.open($me.ServiceUrl + "/" + controller + "/" + method + query, target);
+            return window.open($app.ServiceUrl + "/" + controller + "/" + method + query, target);
         };
 
         $(window).on("hashchange", function (e) {
@@ -281,37 +276,34 @@
 
                 var ourl = e.originalEvent.oldURL;
                 var oldHash = "#";
-                try
-                {
+                try {
                     oldHash = ourl.substr(ourl.indexOf("#"));
                 }
-                catch (e)
-                {
+                catch (e) {
                     // Fix crappy browser support (IE)
                 }
-                $me.registerHistory(oldHash, "Modified");
+                $app.registerHistory(oldHash, "Modified");
                 return;
             }
 
             // history changed because of pushState/replaceState
 
             if ($currentView != null)
-                $currentView.trigger("viewclosing", [$currentView, $me]);
+                $currentView.trigger("viewclosing", [$currentView, $app]);
 
-            $me.log("Popped state to: " + location.toString());
-
+            $app.log("Popped state to: " + location.toString());
             var orgroute = location.hash;
             while (orgroute.indexOf("#") == 0 || orgroute.indexOf("/") == 0)
                 orgroute = orgroute.substring(1);
-            if (orgroute == "") orgroute = $me.DefaultViewRoute;
+            if (orgroute == "") orgroute = $app.DefaultViewRoute;
             var route = orgroute;
             var params = "";
 
             // Find current route:
-            var view = $me.Views[route];
+            var view = $app.Views[route];
             if (!view)
                 while (route.length > 0) {
-                    var view = $me.Views[route + "*"];
+                    var view = $app.Views[route + "*"];
                     if (view) {
                         params = orgroute.substring(route.length);
                         break;
@@ -319,11 +311,21 @@
                     route = route.substring(0, route.length - 1);
                 }
 
-            
+
             if (!view) {
-                $me.error("Can't find view (" + orgroute + ")");
+                $app.error("Can't find view (" + orgroute + ")");
+                view = $app.Views[$app.DefaultViewRoute];
+                location = "#" + $app.DefaultViewRoute;
+                return false;
             }
-            $me.loadComponent(view, "view").done(function ($view) {
+
+            $app.loadComponent(view, "view").done(function ($view) {
+                // Reset states
+                $(".modal-backdrop").remove();
+                $app.FailedRetryCalls = null;
+                $app.FailedCancelCalls = null;
+                $app.RetryDialog = null;
+
                 if ($view.loadItem) $view.loadItem(params);
                 if ($view.LoadItem) $view.LoadItem(params);
                 $view.trigger("viewshowing", [$view]);
@@ -331,7 +333,7 @@
             });
         });
         this.error = function (msg) {
-            $me.log("(ERROR) " + msg, true);
+            $app.log("(ERROR) " + msg, true);
         };
         this.getCurrentView = function () {
             return $currentView;
@@ -340,50 +342,51 @@
             window.history.back();
         };
         this.hideLoading = function (e) {
-            $me.loaders--;
-            if ($me.loaders <= 0) {
-                $me.find(".loading").addClass("hide");
-                $me.loaders = 0;
-                $me.log("Loading completed '" + e + "' (" + $me.loaders + ")");
-                $me.log("-------------------------------------------");
+            $app.loaders--;
+            if ($app.loaders <= 0) {
+                $app.find(".loading").addClass("hide");
+                $app.loaders = 0;
+                $app.log("Loading completed '" + e + "' (" + $app.loaders + ")");
+                $app.log("-------------------------------------------");
             } else {
-                $me.log("Loading phase completed '" + e + "' (" + $me.loaders + ")");
+                $app.log("Loading phase completed '" + e + "' (" + $app.loaders + ")");
             }
         };
         this.log = function (msg, error) {
             if (window.console && typeof window.console.log !== "undefined") {
                 if (error)
-                    window.console.error("Smartapp.JS: " + msg);
+                    window.console.error("Smartapp2.JS: " + msg);
                 else
-                    window.console.log("Smartapp.JS: " + msg);
+                    window.console.log("Smartapp2.JS: " + msg);
             }
         };
         function isFunction(functionToCheck) {
             var getType = {};
             return functionToCheck && getType.toString.call(functionToCheck) === '[object Function]';
         }
-        this.loadComponent = function (component, componentType) {
+        this.loadComponent = function (component, componentType, $container) {
             var dfd = $.Deferred();
 
             var task = component.renderFunc();
             task.then(function ($component) {
                 // Success
                 if ($component == null) {
-                    $me.error("Component named '" + component.name + "' failed to load!");
+                    $app.error("Component named '" + component.name + "' failed to load!");
                     return null;
                 }
 
                 if (component.initFunc)
                     component.initFunc($component);
 
+                if (!$container) $container = $app;
                 $component.hide(); // Always load views default hidden
-                $me.append($component);
+                $container.append($component);
                 $component.on(componentType + "init", function () {
                     dfd.resolveWith(this, [$component]);
                 });
-                $component = $component.smartapp2component($me, componentType);
+                $component = $component.smartapp2component($app, componentType);
 
-                $me.log("Success create " + component.name + " (Size: " + $component.html().length + ")");
+                $app.log("Success create " + component.name + " (Size: " + $component.html().length + ")");
             }, function (xhr, ajaxOptions, thrownError) {
                 // Fail
                 dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
@@ -394,21 +397,21 @@
         this.runPlugin = function (pluginName) {
             return function ($element) {
                 if (isFunction($element[pluginName])) {
-                    var $vw = $element[pluginName]($me); // Init jquery plugin on template
+                    var $vw = $element[pluginName]($app); // Init jquery plugin on template
                     if ($vw == null) {
-                        $me.log("Run plugin " + pluginName + " FAILED or ABORTED! - jQuery plugin with name '" + pluginName + "()' returned null, so either not found call failed!", true);
+                        $app.log("Run plugin " + pluginName + " FAILED or ABORTED! - jQuery plugin with name '" + pluginName + "()' returned null, so either not found call failed!", true);
                         $element.remove();
-                    } else if ($me.IsTouchDevice) {
+                    } else if ($app.IsTouchDevice) {
                         // Bugfix for fixed positioning on touch devices
                         $vw.on("focus", "input, textarea, [contenteditable]", function (e) {
-                            if (!$me.HasMouse) $me.addClass("fixfixed");
+                            if (!$app.HasMouse) $app.addClass("fixfixed");
                         }).on("blur", "input, textarea, [contenteditable]", function (e) {
-                            $me.removeClass("fixfixed");
+                            $app.removeClass("fixfixed");
                         });
                     }
                 }
                 else {
-                    $me.error("Can't initialize view '" + pluginName + "', corresponding jQuery plugin is undefined!");
+                    $app.error("Can't initialize view '" + pluginName + "', corresponding jQuery plugin is undefined!");
                 }
             };
         }
@@ -418,16 +421,16 @@
                 var dfd = $.Deferred();
 
                 var startTimer = new Date();
-                $me.log("Load " + filePath + " view");
+                $app.log("Load " + filePath + " view");
 
                 var $result = null;
 
-                if ($me.ViewTemplateCache[filePath] != null) {
-                    $result = $me.ViewTemplateCache[filePath].clone();
+                if ($app.ViewTemplateCache[filePath] != null) {
+                    $result = $app.ViewTemplateCache[filePath].clone();
                 }
 
                 if ($result == null) {
-                    var url = viewsFolder + "/" + filePath;
+                    var url = viewsFolder ? (viewsFolder + "/" + filePath) : filePath;
 
                     $.ajax({
                         url: url,
@@ -437,13 +440,13 @@
                         // Success
                         var $tmpl = $(result).filter("*:first");
                         if ($tmpl.length == 0)
-                            $me.error("Can't find view element in template '" + filePath + ".html'");
+                            $app.error("Can't find any DOM element in template '" + filePath + "'. Content was: " + result);
                         $result = $tmpl.clone();
-                        $me.ViewTemplateCache[filePath] = $tmpl;
+                        $app.ViewTemplateCache[filePath] = $tmpl;
 
 
                         var diffMs = (new Date()).getTime() - startTimer.getTime();
-                        $me.log("Load completed " + filePath + " view (" + diffMs + "ms)");
+                        $app.log("Load completed " + filePath + " view (" + diffMs + "ms)");
 
                         dfd.resolveWith(this, [$result, textStatus, jqXhr]);
 
@@ -451,7 +454,7 @@
                         // FAIL
                         // TODO: Retry ?
                         var diffMs = (new Date()).getTime() - startTimer.getTime();
-                        $me.error("Load failed " + filePath + " view (" + diffMs + "ms)");
+                        $app.error("Load failed " + filePath + " view (" + diffMs + "ms)");
                         dfd.rejectWith(this, [xhr, ajaxOptions, thrownError]);
                     });
                 } else {
@@ -462,14 +465,14 @@
             };
         };
         this.openDialog = function (name, options) {
-            var dialog = $me.Dialogs[name];
+            var dialog = $app.Dialogs[name];
             if (!dialog) {
-                $me.error("Dialog with name '" + name + "' not registered! Make sure to register all dialogs with the createDialog() function.");
+                $app.error("Dialog with name '" + name + "' not registered! Make sure to register all dialogs with the createDialog() function.");
             }
 
-            var task = $me.loadComponent(dialog, "dialog").done(function ($dialog) {
+            var task = $app.loadComponent(dialog, "dialog", $currentView).done(function ($dialog) {
                 if ($dialog != null) {
-                    var $c = $me.getCurrentView();
+                    var $c = $app.getCurrentView();
                     if ($c != null) $c.triggerViewEvents("viewsuspended");
                     $dialog.showDialog(options);
                 } else {
@@ -490,13 +493,13 @@
         this.registerHistory = function (url, title, force, data) {
             if (!data) data = { url: url };
             if (history.state == null) {
-                $me.replaceHistory(url, title, data);
+                $app.replaceHistory(url, title, data);
                 return;
             }
-            $me.log("Add History: " + url + " (" + title + ")");
+            $app.log("Add History: " + url + " (" + title + ")");
             if (JSON.stringify(history.state) == JSON.stringify(data) && !force) return; // Prevent double post
-            if ($me.DisableHistory) {
-                $me.DisableHistory = false;
+            if ($app.DisableHistory) {
+                $app.DisableHistory = false;
                 return;
             }
             if (window.history && history.pushState) {
@@ -505,21 +508,21 @@
         };
         this.replaceHistory = function (url, title, data) {
             if (!data) data = { url: url };
-            if ($me.DisableHistory) {
-                $me.log("Replace History (disabled): " + url + " (" + title + ")");
-                $me.DisableHistory = false;
+            if ($app.DisableHistory) {
+                $app.log("Replace History (disabled): " + url + " (" + title + ")");
+                $app.DisableHistory = false;
                 return;
             }
-            $me.log("Replace History: " + url + " (" + title + ")");
+            $app.log("Replace History: " + url + " (" + title + ")");
             if (window.history && history.replaceState) {
                 history.replaceState(data, title, url);
             }
         };
         this.showLoading = function (e) {
-            $me.loaders++;
-            $me.find(".loading").removeClass("hide");
+            $app.loaders++;
+            $app.find(".loading").removeClass("hide");
             if (document && document.activeElement) document.activeElement.blur();
-            $me.log("Loading " + e + " (" + $me.loaders + ")");
+            $app.log("Loading " + e + " (" + $app.loaders + ")");
         };
         var altdown = false;
         this.attachKeyShortcuts = function ($view) {
@@ -545,7 +548,7 @@
                         $f[0].click();
                         return false;
                     } else if (field.length > 1) {
-                        $me.Error("Multiple elements binded to same keyboard key error!");
+                        $app.Error("Multiple elements binded to same keyboard key error!");
                     }
                 }
             }).on("keyup", function (evt) {
@@ -558,20 +561,20 @@
         };
         this.on("viewshowed viewrestored dialogshowed", function (e, $component) {
             if ($component.find("[data-shortkey]").length > 0) {
-                $me.log("Keyboard shortcut listener attached");
-                $me.attachKeyShortcuts($component);
+                $app.log("Keyboard shortcut listener attached");
+                $app.attachKeyShortcuts($component);
             }
         });
         this.on("viewclosing dialogclosing", function (e, $component) {
             if ($component.find("[data-shortkey]").length > 0) {
-                $me.log("Keyboard shortcut listener detached");
+                $app.log("Keyboard shortcut listener detached");
                 $(window).off("keydown keyup");
             }
         });
 
-        $me.on("mousemove", function () {
-            $me.HasMouse = true;
-            $me.off("mousemove");
+        $app.on("mousemove", function () {
+            $app.HasMouse = true;
+            $app.off("mousemove");
         });
 
         return this; // Return this jquery control
@@ -667,12 +670,11 @@
     };
 
     $.fn.smartapp2component = function ($app, componentType) { // <-- Constructor method
-        if (this.$me || !$app.AppVersion) {
-            throw "Unintended / recursive call of view plugin. Check that you are not declaring and using a function with the same name as the view plugin!";
+        if (this._smartapp_inited) {
+            throw "Unintended duplicate call of app plugin. Check that you are not declaring and using a function with the same name as the view app!";
         }
+        this._smartapp_inited = true;
 
-        this.$app = $app;
-        this.$me = this;
         var $me = this;
 
         function mapControls($e) {
@@ -776,21 +778,13 @@
                 // SUCCESS
                 if ($c == null) {
                     $app.error("Load control '" + controlName + "' not found in app!");
-                    
+
                 }
                 $c.trigger("controlshowing");
                 $c.show();
                 $container.append($c);
-                
-                $c.trigger("controlshowed");
 
-                var pluginName = controlName.replace(new RegExp("/", "g"), "");
-                if (isFunction($c[pluginName])) {
-                    $c[pluginName]($app); // Init jquery plugin on control template
-                }
-                else {
-                    $app.error("Can't initialize child control '" + pluginName + "', corresponding jQuery plugin is undefined!");
-                }
+                $c.trigger("controlshowed");
 
                 dfd.resolveWith(this, [$c]);
 
@@ -800,7 +794,6 @@
                 dfd.rejectWith(this, []);
             });
 
-            //return $c;
             return dfd;
         };
 
